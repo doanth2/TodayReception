@@ -319,3 +319,199 @@ namespace Domain.CallCenter.TodayReception.Service
         #endregion
     }
 }
+\\\\-----------dataFtoday
+\\^^-------------
+
+using System.Data;
+using System.Text;
+using Oracle.ManagedDataAccess.Client;
+using Infrastructure.Constants;
+using Domain.CallCenter.TodayReception.Repository;
+using Domain.CallCenter.TodayReception.Entity;
+using Infrastructure.Database.Context;
+using Infrastructure.Database.DbConnect.DBConnect;
+
+namespace Infrastructure.CallCenter.TodayReception
+{
+    public class EFtodayReceptionRepository : ITodayReception
+    {
+        private readonly respondCContext _context;
+        private readonly tokmtaContext   _contextTokmta;
+        private readonly tanmtaContext   _contextTanmta;
+        private readonly jdnthaContext   _contextJdntha;
+        private readonly namemtaContext  _contextNamemta;
+
+        private const string CST_NAMEMTA_KBN_YOKEN = "45";   // 各種名称情報（用件内容）
+        private const string CST_NAMEMTA_KBN_KENTO = "JS";   // 各種名称情報（検討状態）
+
+        public EFtodayReceptionRepository(respondCContext context,
+                                          tokmtaContext   tokmtaContext,
+                                          tanmtaContext   tanmtaContext,
+                                          jdnthaContext   jdnthaContext,
+                                          namemtaContext  nameContext)
+        {
+            _context        = context;
+            _contextTokmta  = tokmtaContext;
+            _contextTanmta  = tanmtaContext;
+            _contextJdntha  = jdnthaContext;
+            _contextNamemta = nameContext;
+        }
+
+        #region 本日応対情報取得
+        public IEnumerable<todayReceptionFindByOperatorIdAndMode> findByOperatorIdAndMode(string operatorId, bool mode)
+        {
+            string querySub;
+            StringBuilder queryAll = new StringBuilder();
+
+            IEnumerable<todayReceptionFindByOperatorIdAndMode> todayReceptionDataReader;
+
+            // データベース接続
+            DbManager dbManager = new DbManager();
+
+            try
+            {
+                querySub = $@"
+                            SELECT
+                              RES.RESPNO AS RESPNO
+                             ,RES.TOKCD AS TOKCD
+                             ,TRIM((TRIM(TOK.TOKNMA) || ' ' ||TRIM(TOK.TOKNMB))) AS CUSTNM
+                             ,TRIM((TRIM(TOK.TOKNK) || ' ' ||TRIM(TOK.TOKNKB))) AS CUSTNMKN
+                             ,(SUBSTR(RES.RESPSTM, 1, 2)|| ':' || SUBSTR(RES.RESPSTM, 3, 2)) AS RESPSTARTTM
+                             ,RES.CNTNTCD AS CONTENTCD
+                             ,RES.YOKEN AS TOKRESP
+                             ,RES.CNTNT AS CFSCONTENT
+                             ,RES.COMPFLG AS COMPFLG
+                             ,NCNT.NAME1 AS RESPCONTENTNM
+                             ,TAN.TANNM AS TANNM
+                             ,RES.RUSU AS DELIVERYFLG
+                             ,RES.SYMPDTL AS COMPLETECLASS
+                             ,NCOM.NAME2 AS COMPLETENM
+                             ,TOK.DATKB AS DATFLG
+                             ,RES.SYMP AS RESPCOLOR
+                            FROM EVE_USR1.RESPOND_C RES,
+                                 EVE_USR1.TOKMTA TOK,
+                                 EVE_USR1.TANMTA TAN,
+                                 (
+                                   SELECT
+                                     CODE1
+                                    ,NAME1
+                                   FROM EVE_USR1.NAMEMTA
+                                   WHERE DATKB = '{CommonConst.CST_DATKB.EXIST}'
+                                     AND KBN = '{CST_NAMEMTA_KBN_YOKEN}'
+                                 ) NCNT,
+                                 (
+                                   SELECT
+                                     CODE1
+                                    ,NAME1
+                                    ,NAME2
+                                   FROM EVE_USR1.NAMEMTA
+                                   WHERE DATKB = '{CommonConst.CST_DATKB.EXIST}'
+                                     AND KBN = '{CST_NAMEMTA_KBN_KENTO}'
+                                 ) NCOM
+                            WHERE RES.RESPSDT = TO_CHAR(SYSDATE,'YYYYMMDD')
+                              AND RES.TOKCD = TOK.TOKCD
+                              AND RES.TANCD = TAN.TANCD
+                              AND NCNT.CODE1(+) = RES.CNTNTCD
+                              AND RES.SYMPDTL = NCOM.CODE1(+)
+                            ";
+
+                // メインSQL生成
+                queryAll.AppendLine("SELECT DISTINCT A.* ");
+                queryAll.AppendLine("FROM ( ");
+
+                // modeがfalseの場合は担当顧客分のみ表示、trueの場合は受付分全て表示
+                if (mode)
+                {
+                    queryAll.AppendLine(querySub);
+                    queryAll.AppendLine("AND RES.INPTANCD = :operatorId ");
+                    queryAll.AppendLine("UNION ");
+                    queryAll.AppendLine(querySub);
+                    queryAll.AppendLine("AND RES.TANCD = :operatorId ");
+                    queryAll.AppendLine(") A");
+                }
+                else
+                {
+                    queryAll.AppendLine(querySub);
+                    queryAll.AppendLine("AND RES.TANCD = :operatorId ");
+                    queryAll.AppendLine(") A");
+                }
+
+                // 応対開始時間の降順でソート
+                queryAll.AppendLine("ORDER BY A.RESPSTARTTM DESC ");
+
+                using (OracleCommand cmd = new OracleCommand(queryAll.ToString()))
+                {
+                    cmd.Connection = dbManager.con;
+                    cmd.Parameters.Add("operatorId", operatorId);
+
+                    using (OracleDataReader reader = cmd.ExecuteReader())
+                    {
+                        todayReceptionDataReader = dbManager.DataReaderToEntities<todayReceptionFindByOperatorIdAndMode>(reader);
+
+                        // 戻り値を返す
+                        return todayReceptionDataReader.Select(x => new todayReceptionFindByOperatorIdAndMode()
+                        {
+                            respNo = x.respNo,
+                            tokCd = x.tokCd,
+                            custNm = x.custNm,
+                            custNmKn = x.custNmKn,
+                            respStartTm = x.respStartTm,
+                            contentCd = x.contentCd,
+                            tokResp = x.tokResp,
+                            cfsContent = x.cfsContent,
+                            compFlg = x.compFlg,
+                            respContentNm = x.respContentNm,
+                            tanNm = x.tanNm,
+                            deliveryFlg = x.deliveryFlg,
+                            completeClass = x.completeClass,
+                            completeNm = x.completeNm,
+                            datFlg = x.datFlg,
+                            respColor = x.respColor
+                        });
+                    }
+                }
+            }
+            catch (OracleException e)
+            {
+                Console.WriteLine("本日応対取得：todayReceptionList");
+                Console.WriteLine("Code: " + e.ErrorCode + "\n" + "Message: " + e.Message);
+                Console.WriteLine("例外処理が発生しました。 システム管理者に連絡してください。");
+
+                return null;
+            }
+            finally
+            {
+                //データベースを閉じる
+                dbManager.Close();
+            }
+        }
+        #endregion
+    }
+}
+---------datamodel
+\^^^^----------
+namespace Infrastructure.CallCenter.TodayReception.DataModels
+{
+    /// <summary>
+    /// 本日応対
+    /// </summary>
+    public partial class todayReceptionDataModel
+    {
+        public string? respNo { get; init; }
+        public string? tokCd { get; init; }
+        public string? custNm { get; init; }
+        public string? custNmKn { get; init; }
+        public string? respStartTm { get; init; }
+        public string? contentCd { get; init; }
+        public string? tokResp { get; init; }
+        public string? cfsContent { get; init; }
+        public string? compFlg { get; init; }
+        public string? respContentNm { get; init; }
+        public string? tanNm { get; init; }
+        public string? deliveryFlg { get; init; }
+        public string? completeClass { get; init; }
+        public string? completeNm { get; init; }
+        public string? datFlg { get; init; }
+        public string? respColor { get; init; }
+    }
+}
